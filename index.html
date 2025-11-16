@@ -16,6 +16,9 @@
                 <div class="timer">
                     <i class="fas fa-clock"></i>
                     <span id="timer">00:00</span>
+                    <button class="btn btn-secondary btn-compact" id="pauseBtn" title="Pause game">
+                        <i class="fas fa-pause"></i>
+                    </button>
                 </div>
                 <div class="player-info">
                     <div class="player-name" title="Current player">
@@ -29,6 +32,13 @@
                     <button class="btn btn-secondary btn-compact" id="openDashboard" title="Open dashboard">
                         <i class="fas fa-chart-pie"></i>
                         Dashboard
+                    </button>
+                    <button class="btn btn-secondary btn-compact" id="soundToggle" title="Toggle sound effects">
+                        <i class="fas fa-volume-up"></i>
+                    </button>
+                    <button class="btn btn-secondary btn-compact" id="themeButton" title="Change theme">
+                        <i class="fas fa-palette"></i>
+                        Theme
                     </button>
                     <button class="btn btn-secondary btn-compact" id="authButton" title="Login or Register">
                         <i class="fas fa-right-to-bracket"></i>
@@ -48,9 +58,9 @@
                         <option value="expert">Expert</option>
                     </select>
                 </div>
-                <div class="difficulty-selector" title="Play today's daily puzzle">
+                <div class="difficulty-selector" title="Play today's daily challenge">
                     <button class="btn btn-secondary btn-compact" id="dailyPuzzleBtn">
-                        <i class="fas fa-calendar-day"></i> Daily Puzzle
+                        <i class="fas fa-calendar-star"></i> Daily Challenge
                     </button>
                 </div>
                 
@@ -61,6 +71,7 @@
             <div id="dailyQuizBanner" class="info-banner" style="display:none"></div>
             <div class="game-board">
                 <div class="sudoku-grid" id="sudokuGrid"></div>
+                <div class="game-blur-overlay" id="gameBlur"></div>
             </div>
             
             <div class="game-controls">
@@ -105,6 +116,10 @@
         <div class="game-info">
             <div class="stats">
                 <div class="stat">
+                    <span class="stat-label">Score:</span>
+                    <span class="stat-value score-value" id="currentScore">0</span>
+                </div>
+                <div class="stat">
                     <span class="stat-label">Mistakes:</span>
                     <span class="stat-value" id="mistakes">0</span>
                 </div>
@@ -136,10 +151,11 @@
                             <span>Hints Used:</span>
                             <span id="finalHints">0</span>
                         </div>
-                        <div class="completion-stat">
-                            <span>Score:</span>
-                            <span id="finalScore">0</span>
+                        <div class="completion-stat score-breakdown">
+                            <span>Final Score:</span>
+                            <span id="finalScore" class="final-score-value">0</span>
                         </div>
+                        <div id="scoreBreakdown" class="score-details"></div>
                     </div>
                 </div>
                 <div class="modal-footer">
@@ -173,10 +189,11 @@
                     </form>
                     <form id="registerForm" class="auth-form" style="display:none" autocomplete="on">
                         <div class="form-field">
-                            <input id="regUsername" type="text" placeholder="Username" required>
+                            <input id="regUsername" type="text" placeholder="Username (3-20 chars, letters/numbers/_)" required>
                         </div>
                         <div class="form-field">
-                            <input id="regPassword" type="password" placeholder="Password" required>
+                            <input id="regPassword" type="password" placeholder="Password (min 4 chars)" required>
+                            <div id="passwordStrength" class="password-strength" style="display:none"></div>
                         </div>
                         <button type="submit" class="btn btn-secondary" style="width:100%">
                             <i class="fas fa-user-plus"></i> Create Account
@@ -191,18 +208,62 @@
 
         <!-- Dashboard Modal -->
         <div class="modal" id="dashboardModal">
-            <div class="modal-content achievements-content">
+            <div class="modal-content dashboard-content">
                 <div class="modal-header">
-                    <h2><i class="fas fa-chart-pie"></i> Dashboard</h2>
+                    <h2><i class="fas fa-chart-line"></i> Player Dashboard</h2>
+                    <div class="dashboard-subtitle" id="dashboardPlayer">Guest</div>
                 </div>
                 <div class="modal-body">
-                    <div style="display:grid;gap:16px">
-                        <div>
-                            <canvas id="difficultyChart" height="180"></canvas>
+                    <div class="dashboard-horizontal-layout">
+                        <div class="dashboard-left-section">
+                            <div class="dashboard-grid">
+                        <div class="dashboard-card">
+                            <div class="card-icon streak-icon">
+                                <i class="fas fa-fire"></i>
+                            </div>
+                            <div class="card-content">
+                                <div class="card-value" id="dashStreak">0</div>
+                                <div class="card-label">Day Streak</div>
+                            </div>
                         </div>
-                        <div class="completion-stats">
-                            <div class="completion-stat"><span>Daily Streak:</span><span id="dailyStreak">0</span></div>
-                            <div class="completion-stat"><span>Total Score:</span><span id="totalScore">0</span></div>
+                        <div class="dashboard-card">
+                            <div class="card-icon score-icon">
+                                <i class="fas fa-star"></i>
+                            </div>
+                            <div class="card-content">
+                                <div class="card-value" id="dashTotalScore">0</div>
+                                <div class="card-label">Total Score</div>
+                            </div>
+                        </div>
+                        <div class="dashboard-card">
+                            <div class="card-icon games-icon">
+                                <i class="fas fa-gamepad"></i>
+                            </div>
+                            <div class="card-content">
+                                <div class="card-value" id="dashTotalGames">0</div>
+                                <div class="card-label">Games Won</div>
+                            </div>
+                        </div>
+                        <div class="dashboard-card">
+                            <div class="card-icon time-icon">
+                                <i class="fas fa-clock"></i>
+                            </div>
+                            <div class="card-content">
+                                <div class="card-value" id="dashAvgTime">--:--</div>
+                                <div class="card-label">Avg Time</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="dashboard-stats-section">
+                        <h3 class="section-title">Detailed Statistics</h3>
+                        <div class="stats-table" id="detailedStats"></div>
+                    </div>
+                        </div>
+                        <div class="dashboard-right-section">
+                            <div class="dashboard-chart-section">
+                                <h3 class="section-title">Performance by Difficulty</h3>
+                                <canvas id="difficultyChart"></canvas>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -248,17 +309,110 @@
             </div>
         </div>
         
-        <!-- Daily Puzzle Modal -->
-        <div class="modal" id="dailyModal">
-            <div class="modal-content" style="max-width:520px">
+        <!-- Pause Overlay -->
+        <div class="pause-overlay" id="pauseOverlay">
+            <div class="pause-content">
+                <div class="pause-icon">
+                    <i class="fas fa-pause-circle"></i>
+                </div>
+                <h2>Game Paused</h2>
+                <p>Take a break and come back when you're ready</p>
+                <button class="btn btn-primary" id="resumeBtn">
+                    <i class="fas fa-play"></i> Resume Game
+                </button>
+            </div>
+        </div>
+
+        <!-- Theme Settings Modal -->
+        <div class="modal" id="themeModal">
+            <div class="modal-content" style="max-width:500px">
                 <div class="modal-header">
-                    <h2><i class="fas fa-calendar-day"></i> Daily Puzzle</h2>
+                    <h2><i class="fas fa-palette"></i> Choose Theme</h2>
                 </div>
                 <div class="modal-body">
-                    <p>Today's Sudoku is ready. You'll see one highlighted cell. Enter the correct number for that cell to complete the quiz.</p>
+                    <div class="theme-grid">
+                        <div class="theme-option" data-theme="light">
+                            <div class="theme-preview light-preview">
+                                <div class="preview-header"></div>
+                                <div class="preview-grid"></div>
+                            </div>
+                            <div class="theme-name">Light</div>
+                        </div>
+                        <div class="theme-option" data-theme="dark">
+                            <div class="theme-preview dark-preview">
+                                <div class="preview-header"></div>
+                                <div class="preview-grid"></div>
+                            </div>
+                            <div class="theme-name">Dark</div>
+                        </div>
+                        <div class="theme-option" data-theme="solarized">
+                            <div class="theme-preview solarized-preview">
+                                <div class="preview-header"></div>
+                                <div class="preview-grid"></div>
+                            </div>
+                            <div class="theme-name">Solarized</div>
+                        </div>
+                        <div class="theme-option" data-theme="pastel">
+                            <div class="theme-preview pastel-preview">
+                                <div class="preview-header"></div>
+                                <div class="preview-grid"></div>
+                            </div>
+                            <div class="theme-name">Pastel</div>
+                        </div>
+                    </div>
                 </div>
                 <div class="modal-footer">
-                    <button class="btn btn-primary" id="startDaily">Start</button>
+                    <button class="btn btn-secondary" id="closeTheme">Close</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Daily Challenge Modal -->
+        <div class="modal" id="dailyModal">
+            <div class="modal-content daily-challenge-modal">
+                <div class="modal-header">
+                    <h2><i class="fas fa-calendar-star"></i> Daily Challenge</h2>
+                    <div class="daily-date" id="dailyDate"></div>
+                </div>
+                <div class="modal-body">
+                    <div class="daily-info">
+                        <div class="daily-stats">
+                            <div class="daily-stat">
+                                <div class="stat-icon"><i class="fas fa-fire"></i></div>
+                                <div class="stat-info">
+                                    <div class="stat-value" id="dailyStreak">0</div>
+                                    <div class="stat-label">Day Streak</div>
+                                </div>
+                            </div>
+                            <div class="daily-stat">
+                                <div class="stat-icon"><i class="fas fa-trophy"></i></div>
+                                <div class="stat-info">
+                                    <div class="stat-value" id="dailyBestTime">--:--</div>
+                                    <div class="stat-label">Best Time</div>
+                                </div>
+                            </div>
+                            <div class="daily-stat">
+                                <div class="stat-icon"><i class="fas fa-star"></i></div>
+                                <div class="stat-info">
+                                    <div class="stat-value" id="dailyBestScore">0</div>
+                                    <div class="stat-label">Best Score</div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="daily-description">
+                            <p>Complete today's unique Sudoku challenge! Everyone gets the same puzzle worldwide.</p>
+                            <div class="daily-difficulty">
+                                <span class="difficulty-badge" id="dailyDifficultyBadge">Medium</span>
+                                <span class="daily-reward">+50% Bonus Points</span>
+                            </div>
+                        </div>
+                        <div class="daily-status" id="dailyStatus"></div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-primary" id="startDaily">
+                        <i class="fas fa-play"></i> Start Challenge
+                    </button>
                     <button class="btn btn-secondary" id="closeDaily">Close</button>
                 </div>
             </div>
@@ -266,6 +420,7 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="sounds.js"></script>
     <script src="script.js"></script>
 </body>
 </html>

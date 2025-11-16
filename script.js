@@ -11,7 +11,7 @@ class SudokuGame {
         this.isGameComplete = false;
         this.isAnimatingSolve = false;
         this.currentPlayerName = '';
-        this.currentUser = null; // authenticated username
+        this.currentUser = null;
         this.userStats = this.loadUserStats();
         this.bestTimes = this.loadBestTimes();
         this.achievements = this.loadAchievements ? this.loadAchievements() : {};
@@ -20,6 +20,11 @@ class SudokuGame {
         this.isDailyPuzzleToday = false;
         this.dailyQuizMode = false;
         this.dailyTargetCell = null;
+        this.currentScore = 0;
+        this.scoreMultiplier = 1.0;
+        this.isPaused = false;
+        this.currentTheme = this.loadTheme();
+        this.soundManager = new SoundManager();
         
         this.difficultyLevels = {
             easy: 40,
@@ -33,6 +38,8 @@ class SudokuGame {
     }
     
     initializeGame() {
+        this.applyTheme(this.currentTheme);
+        this.updateSoundUI();
         this.createGrid();
         this.bootstrapAuthFromStorage();
         if (!this.currentUser) {
@@ -185,10 +192,12 @@ class SudokuGame {
     }
     
     selectCell(row, col) {
-        if (this.isGameComplete || this.isAnimatingSolve) return;
+        if (this.isGameComplete || this.isAnimatingSolve || this.isPaused) return;
         
         // Don't allow selection of given cells
         if (this.originalGrid[row][col] !== 0) return;
+        
+        this.soundManager.cellClick();
         
         // Remove previous selection
         if (this.selectedCell) {
@@ -246,7 +255,7 @@ class SudokuGame {
     }
     
     inputNumber(num) {
-        if (!this.selectedCell || this.isGameComplete || this.isAnimatingSolve) return;
+        if (!this.selectedCell || this.isGameComplete || this.isAnimatingSolve || this.isPaused) return;
         
         const { row, col } = this.selectedCell;
         
@@ -274,6 +283,7 @@ class SudokuGame {
 
         // Check if move is valid
         if (this.isValidMove(row, col, num)) {
+            this.soundManager.numberPlaced();
             this.grid[row][col] = num;
             this.updateCellDisplay(row, col);
             const cell = document.querySelector(`[data-row="${row}"][data-col="${col}"]`);
@@ -288,9 +298,11 @@ class SudokuGame {
             }
         } else {
             // Invalid move - show error
+            this.soundManager.error();
             this.showError(row, col);
             this.mistakes++;
             this.updateMistakesDisplay();
+            this.updateScoreDisplay();
         }
     }
     
@@ -330,6 +342,7 @@ class SudokuGame {
     
     completeGame() {
         this.isGameComplete = true;
+        this.soundManager.complete();
         this.stopTimer();
         const elapsedSeconds = this.getElapsedSeconds();
         this.updateBestTimeForPlayer(elapsedSeconds);
@@ -337,18 +350,27 @@ class SudokuGame {
         if (this.maybeUnlockAchievements) this.maybeUnlockAchievements({ elapsedSeconds });
         if (this.recordLeaderboardEntry) this.recordLeaderboardEntry(elapsedSeconds);
         
-        // Show completion modal
+        // Calculate score with daily bonus
+        let scoreNow = this.calculateScore({ elapsedSeconds, mistakes: this.mistakes, hints: this.hintsUsed, firstTry: !this.hasAutoSolved });
+        if (this.isDailyPuzzleToday) {
+            scoreNow = Math.floor(scoreNow * 1.5); // 50% bonus for daily challenge
+            this.completeDailyChallenge(elapsedSeconds, scoreNow);
+        }
+        
+        // Show completion modal with score breakdown
         document.getElementById('finalTime').textContent = document.getElementById('timer').textContent;
         document.getElementById('finalMistakes').textContent = this.mistakes;
         document.getElementById('finalHints').textContent = this.hintsUsed;
-        const scoreNow = this.calculateScore({ elapsedSeconds, mistakes: this.mistakes, hints: this.hintsUsed, firstTry: !this.hasAutoSolved });
         const scoreEl = document.getElementById('finalScore');
-        if (scoreEl) scoreEl.textContent = String(scoreNow);
+        if (scoreEl) scoreEl.textContent = scoreNow.toLocaleString();
+        this.showScoreBreakdown(elapsedSeconds);
         document.getElementById('completionModal').classList.add('show');
     }
     
     provideHint() {
-        if (this.isGameComplete) return;
+        if (this.isGameComplete || this.isPaused) return;
+        
+        this.soundManager.hint();
         
         // Find empty cells
         const emptyCells = [];
@@ -372,6 +394,7 @@ class SudokuGame {
         
         this.hintsUsed++;
         this.updateHintsDisplay();
+        this.updateScoreDisplay();
         
         // Check if puzzle is complete
         if (this.isPuzzleComplete()) {
@@ -380,7 +403,7 @@ class SudokuGame {
     }
     
     async solvePuzzle() {
-        if (this.isGameComplete || this.isAnimatingSolve) return;
+        if (this.isGameComplete || this.isAnimatingSolve || this.isPaused) return;
         this.isAnimatingSolve = true;
         this.hasAutoSolved = true;
 
@@ -392,7 +415,7 @@ class SudokuGame {
             }
         }
 
-        // Sequentially fill cells with a pop animation
+        // Sequentially fill cells with a pop animation and sound
         for (let i = 0; i < emptyCells.length; i++) {
             const { row, col } = emptyCells[i];
             this.grid[row][col] = this.solution[row][col];
@@ -400,9 +423,14 @@ class SudokuGame {
             const cell = document.querySelector(`[data-row="${row}"][data-col="${col}"]`);
             if (cell) {
                 cell.classList.add('fill-anim');
-                // Remove the animation class shortly after to allow reflow if needed later
                 setTimeout(() => cell.classList.remove('fill-anim'), 220);
             }
+            
+            // Play subtle sound every few cells to avoid overwhelming
+            if (i % 3 === 0) {
+                this.soundManager.playTone(1000 + (i * 20), 0.03, 0.06, 'sine');
+            }
+            
             await this.sleep(40);
         }
 
@@ -423,7 +451,7 @@ class SudokuGame {
     }
     
     resetPuzzle() {
-        if (this.isGameComplete) return;
+        if (this.isGameComplete || this.isPaused) return;
         
         // Reset to original puzzle
         for (let row = 0; row < 9; row++) {
@@ -437,6 +465,7 @@ class SudokuGame {
     }
     
     newGame() {
+        if (this.isPaused) this.resumeGame();
         this.generateNewPuzzle();
         this.updateDisplay();
         this.resetGameStats();
@@ -451,8 +480,10 @@ class SudokuGame {
     resetGameStats() {
         this.mistakes = 0;
         this.hintsUsed = 0;
+        this.currentScore = 0;
         this.updateMistakesDisplay();
         this.updateHintsDisplay();
+        this.updateScoreDisplay();
         this.resetTimer();
     }
     
@@ -472,6 +503,18 @@ class SudokuGame {
         document.getElementById('hintsUsed').textContent = this.hintsUsed;
     }
     
+    updateScoreDisplay() {
+        const elapsedSeconds = this.getElapsedSeconds();
+        this.currentScore = this.calculateScore({ 
+            elapsedSeconds, 
+            mistakes: this.mistakes, 
+            hints: this.hintsUsed, 
+            firstTry: !this.hasAutoSolved 
+        });
+        const scoreEl = document.getElementById('currentScore');
+        if (scoreEl) scoreEl.textContent = this.currentScore.toLocaleString();
+    }
+    
     startTimer() {
         this.startTime = Date.now();
         this.timerInterval = setInterval(() => {
@@ -483,6 +526,34 @@ class SudokuGame {
         if (this.timerInterval) {
             clearInterval(this.timerInterval);
             this.timerInterval = null;
+        }
+    }
+    
+    pauseGame() {
+        if (this.isGameComplete || this.isPaused) return;
+        this.soundManager.pause();
+        this.isPaused = true;
+        this.stopTimer();
+        document.getElementById('pauseOverlay').classList.add('active');
+        document.getElementById('gameBlur').classList.add('active');
+        const pauseBtn = document.getElementById('pauseBtn');
+        if (pauseBtn) {
+            pauseBtn.innerHTML = '<i class="fas fa-play"></i>';
+            pauseBtn.title = 'Resume game';
+        }
+    }
+    
+    resumeGame() {
+        if (!this.isPaused) return;
+        this.soundManager.resume();
+        this.isPaused = false;
+        this.startTimer();
+        document.getElementById('pauseOverlay').classList.remove('active');
+        document.getElementById('gameBlur').classList.remove('active');
+        const pauseBtn = document.getElementById('pauseBtn');
+        if (pauseBtn) {
+            pauseBtn.innerHTML = '<i class="fas fa-pause"></i>';
+            pauseBtn.title = 'Pause game';
         }
     }
     
@@ -501,6 +572,11 @@ class SudokuGame {
         
         document.getElementById('timer').textContent = 
             `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+        
+        // Update score in real-time
+        if (!this.isGameComplete) {
+            this.updateScoreDisplay();
+        }
     }
 
     // ----- Player and Best Time Management -----
@@ -578,14 +654,33 @@ class SudokuGame {
     }
 
     calculateScore({ elapsedSeconds, mistakes, hints, firstTry }) {
-        // Base 500 for first correct completion; time decay and penalties
-        let score = firstTry ? 500 : 300;
-        // Faster time gets more points; cap bonus at 300 for <2 min, scale down
-        const timeBonus = Math.max(0, 300 - Math.floor(elapsedSeconds));
-        score += Math.max(0, timeBonus);
-        // penalties
-        score -= mistakes * 20;
-        score -= hints * 30;
+        const difficulty = document.getElementById('difficulty').value;
+        const difficultyMultipliers = { easy: 1.0, medium: 1.5, hard: 2.0, expert: 3.0 };
+        const multiplier = difficultyMultipliers[difficulty];
+        
+        // Base score: 1000 points
+        let score = 1000;
+        
+        // Time bonus: More points for faster completion
+        const timeTargets = { easy: 600, medium: 900, hard: 1800, expert: 3600 }; // seconds
+        const target = timeTargets[difficulty];
+        if (elapsedSeconds < target) {
+            const timeBonus = Math.floor((target - elapsedSeconds) / target * 500);
+            score += timeBonus;
+        }
+        
+        // Mistake penalties: -50 points per mistake
+        score -= mistakes * 50;
+        
+        // Hint penalties: -100 points per hint
+        score -= hints * 100;
+        
+        // Auto-solve penalty: -80% of score
+        if (!firstTry) score = Math.floor(score * 0.2);
+        
+        // Apply difficulty multiplier
+        score = Math.floor(score * multiplier);
+        
         return Math.max(0, score);
     }
 
@@ -735,17 +830,171 @@ class SudokuGame {
     promptAndSetPlayer() {
         let name = prompt('Enter player name') || '';
         name = name.trim();
-        if (!name) name = 'Player';
+        if (!name) name = 'Guest';
         this.currentPlayerName = name;
         this.updatePlayerUI();
+    }
+    
+    showAuthError(message) {
+        const errorDiv = document.getElementById('authError') || this.createAuthMessage('authError', 'error');
+        errorDiv.textContent = message;
+        errorDiv.style.display = 'block';
+        setTimeout(() => errorDiv.style.display = 'none', 4000);
+    }
+    
+    showAuthSuccess(message) {
+        const successDiv = document.getElementById('authSuccess') || this.createAuthMessage('authSuccess', 'success');
+        successDiv.textContent = message;
+        successDiv.style.display = 'block';
+        setTimeout(() => successDiv.style.display = 'none', 3000);
+    }
+    
+    createAuthMessage(id, type) {
+        const div = document.createElement('div');
+        div.id = id;
+        div.className = `auth-message auth-${type}`;
+        div.style.display = 'none';
+        const modalBody = document.querySelector('#authModal .modal-body');
+        modalBody.insertBefore(div, modalBody.firstChild);
+        return div;
+    }
+    
+    clearAuthForms() {
+        document.getElementById('loginUsername').value = '';
+        document.getElementById('loginPassword').value = '';
+        document.getElementById('regUsername').value = '';
+        document.getElementById('regPassword').value = '';
+        const strengthDiv = document.getElementById('passwordStrength');
+        if (strengthDiv) strengthDiv.style.display = 'none';
+    }
+    
+    showScoreBreakdown(elapsedSeconds) {
+        const difficulty = document.getElementById('difficulty').value;
+        const difficultyMultipliers = { easy: 1.0, medium: 1.5, hard: 2.0, expert: 3.0 };
+        const timeTargets = { easy: 600, medium: 900, hard: 1800, expert: 3600 };
+        
+        const breakdown = document.getElementById('scoreBreakdown');
+        if (!breakdown) return;
+        
+        let html = '<div class="score-item"><span>Base Score:</span><span>+1,000</span></div>';
+        
+        // Time bonus
+        const target = timeTargets[difficulty];
+        if (elapsedSeconds < target) {
+            const timeBonus = Math.floor((target - elapsedSeconds) / target * 500);
+            html += `<div class="score-item positive"><span>Time Bonus:</span><span>+${timeBonus.toLocaleString()}</span></div>`;
+        }
+        
+        // Penalties
+        if (this.mistakes > 0) {
+            html += `<div class="score-item negative"><span>Mistake Penalty:</span><span>-${(this.mistakes * 50).toLocaleString()}</span></div>`;
+        }
+        if (this.hintsUsed > 0) {
+            html += `<div class="score-item negative"><span>Hint Penalty:</span><span>-${(this.hintsUsed * 100).toLocaleString()}</span></div>`;
+        }
+        if (this.hasAutoSolved) {
+            html += `<div class="score-item negative"><span>Auto-solve Penalty:</span><span>-80%</span></div>`;
+        }
+        
+        // Difficulty multiplier
+        const multiplier = difficultyMultipliers[difficulty];
+        if (multiplier !== 1.0) {
+            html += `<div class="score-item multiplier"><span>${difficulty.charAt(0).toUpperCase() + difficulty.slice(1)} Multiplier:</span><span>×${multiplier}</span></div>`;
+        }
+        
+        breakdown.innerHTML = html;
+    }
+    
+    loadTheme() {
+        try {
+            return localStorage.getItem('sudokuTheme') || 'light';
+        } catch (_) {
+            return 'light';
+        }
+    }
+    
+    saveTheme(theme) {
+        try {
+            localStorage.setItem('sudokuTheme', theme);
+        } catch (_) {}
+    }
+    
+    applyTheme(theme) {
+        document.documentElement.setAttribute('data-theme', theme);
+        this.currentTheme = theme;
+        this.saveTheme(theme);
+        this.updateThemeUI();
+    }
+    
+    updateThemeUI() {
+        document.querySelectorAll('.theme-option').forEach(option => {
+            if (option.dataset.theme === this.currentTheme) {
+                option.classList.add('active');
+            } else {
+                option.classList.remove('active');
+            }
+        });
+    }
+    
+    updateSoundUI() {
+        const soundBtn = document.getElementById('soundToggle');
+        if (soundBtn) {
+            const icon = this.soundManager.enabled ? 'fa-volume-up' : 'fa-volume-mute';
+            soundBtn.innerHTML = `<i class="fas ${icon}"></i>`;
+            soundBtn.title = this.soundManager.enabled ? 'Mute sounds' : 'Unmute sounds';
+        }
+    }
+    
+    updatePasswordStrength(password) {
+        const strengthDiv = document.getElementById('passwordStrength');
+        if (!strengthDiv) return;
+        
+        if (!password) {
+            strengthDiv.style.display = 'none';
+            return;
+        }
+        
+        let strength = 0;
+        let message = '';
+        
+        if (password.length >= 4) strength++;
+        if (password.length >= 8) strength++;
+        if (/[A-Z]/.test(password)) strength++;
+        if (/[0-9]/.test(password)) strength++;
+        if (/[^A-Za-z0-9]/.test(password)) strength++;
+        
+        strengthDiv.className = 'password-strength ';
+        
+        if (strength <= 2) {
+            strengthDiv.className += 'password-weak';
+            message = 'Weak password';
+        } else if (strength <= 3) {
+            strengthDiv.className += 'password-medium';
+            message = 'Medium password';
+        } else {
+            strengthDiv.className += 'password-strong';
+            message = 'Strong password';
+        }
+        
+        strengthDiv.textContent = message;
+        strengthDiv.style.display = 'block';
     }
 
     updatePlayerUI() {
         const nameEl = document.getElementById('currentPlayerName');
         const bestEl = document.getElementById('bestTime');
-        if (nameEl) nameEl.textContent = this.currentPlayerName || '—';
+        const displayName = this.currentPlayerName || 'Guest';
+        if (nameEl) nameEl.textContent = displayName;
         const best = this.getBestTimeForCurrentPlayer();
         if (bestEl) bestEl.textContent = Number.isFinite(best) ? this.formatSeconds(best) : '—';
+        
+        // Update auth button text based on login status
+        const authBtn = document.getElementById('authButton');
+        if (authBtn) {
+            const icon = authBtn.querySelector('i');
+            const text = this.currentUser ? 'Account' : 'Login';
+            authBtn.innerHTML = `${icon.outerHTML} ${text}`;
+        }
     }
 
     getBestTimeForCurrentPlayer() {
@@ -881,14 +1130,10 @@ class SudokuGame {
         if (authBtn) authBtn.addEventListener('click', () => authModal.classList.add('show'));
         if (closeAuth) closeAuth.addEventListener('click', () => authModal.classList.remove('show'));
         if (logoutBtn) logoutBtn.addEventListener('click', () => {
-            this.currentUser = null;
-            localStorage.removeItem('sudokuCurrentUser');
-            const authB = document.getElementById('authButton');
-            const logoutB = document.getElementById('logoutButton');
-            if (authB) authB.style.display = '';
-            if (logoutB) logoutB.style.display = 'none';
-            this.currentPlayerName = 'Player';
-            this.updatePlayerUI();
+            if (confirm('Are you sure you want to logout?')) {
+                this.logout();
+                this.showAuthSuccess('Logged out successfully');
+            }
         });
 
         // Auth tab switching
@@ -899,43 +1144,66 @@ class SudokuGame {
                 const tab = btn.getAttribute('data-auth-tab');
                 document.getElementById('loginForm').style.display = tab === 'login' ? '' : 'none';
                 document.getElementById('registerForm').style.display = tab === 'register' ? '' : 'none';
+                this.clearAuthForms();
             });
         });
+        
+        // Password strength indicator
+        const regPassword = document.getElementById('regPassword');
+        if (regPassword) {
+            regPassword.addEventListener('input', (e) => {
+                this.updatePasswordStrength(e.target.value);
+            });
+        }
 
-        // Login/Register submit
+        // Login/Register submit with enhanced validation
         const loginForm = document.getElementById('loginForm');
         if (loginForm) loginForm.addEventListener('submit', async (e) => {
             e.preventDefault();
             const user = document.getElementById('loginUsername').value.trim();
             const pass = document.getElementById('loginPassword').value;
-            if (await this.verifyUserAsync(user, pass)) {
-                this.currentUser = user;
-                localStorage.setItem('sudokuCurrentUser', user);
-                this.currentPlayerName = user;
-                this.updatePlayerUI();
-                document.getElementById('authModal').classList.remove('show');
-                const authB = document.getElementById('authButton');
-                const logoutB = document.getElementById('logoutButton');
-                if (authB) authB.style.display = 'none';
-                if (logoutB) logoutB.style.display = '';
-            } else {
-                alert('Invalid username or password');
+            
+            if (!user || !pass) {
+                this.showAuthError('Please fill in all fields');
+                return;
+            }
+            
+            try {
+                if (await this.verifyUserAsync(user, pass)) {
+                    this.currentUser = user;
+                    localStorage.setItem('sudokuCurrentUser', user);
+                    this.currentPlayerName = user;
+                    this.updatePlayerUI();
+                    document.getElementById('authModal').classList.remove('show');
+                    const authB = document.getElementById('authButton');
+                    const logoutB = document.getElementById('logoutButton');
+                    if (authB) authB.style.display = 'none';
+                    if (logoutB) logoutB.style.display = '';
+                    this.showAuthSuccess(`Welcome back, ${user}!`);
+                    this.clearAuthForms();
+                } else {
+                    this.showAuthError('Invalid username or password');
+                }
+            } catch (error) {
+                this.showAuthError('Login failed. Please try again.');
             }
         });
+        
         const regForm = document.getElementById('registerForm');
         if (regForm) regForm.addEventListener('submit', async (e) => {
             e.preventDefault();
             const user = document.getElementById('regUsername').value.trim();
             const pass = document.getElementById('regPassword').value;
-            if (!user || !pass) return;
-            if (this.userExists(user)) {
-                alert('Username already exists');
-                return;
+            
+            try {
+                await this.createUserAsync(user, pass);
+                this.showAuthSuccess('Account created successfully!');
+                this.clearAuthForms();
+                // Switch to login tab
+                document.querySelector('[data-auth-tab="login"]').click();
+            } catch (error) {
+                this.showAuthError(error.message);
             }
-            await this.createUserAsync(user, pass);
-            alert('Account created. You can login now.');
-            // switch to login tab
-            document.querySelector('[data-auth-tab="login"]').click();
         });
 
         // Dashboard modal
@@ -948,16 +1216,17 @@ class SudokuGame {
         });
         if (closeDash) closeDash.addEventListener('click', () => dashModal.classList.remove('show'));
 
-        // Daily Puzzle
+        // Daily Challenge
         const dailyBtn = document.getElementById('dailyPuzzleBtn');
         if (dailyBtn) dailyBtn.addEventListener('click', () => {
+            this.updateDailyModal();
             const m = document.getElementById('dailyModal');
             if (m) m.classList.add('show');
         });
         const startDaily = document.getElementById('startDaily');
         const closeDaily = document.getElementById('closeDaily');
         if (startDaily) startDaily.addEventListener('click', () => {
-            this.startDailyPuzzle();
+            this.startDailyChallenge();
             const m = document.getElementById('dailyModal');
             if (m) m.classList.remove('show');
         });
@@ -966,9 +1235,55 @@ class SudokuGame {
             if (m) m.classList.remove('show');
         });
         
+        // Sound Toggle
+        const soundToggle = document.getElementById('soundToggle');
+        if (soundToggle) soundToggle.addEventListener('click', () => {
+            this.soundManager.toggle();
+            this.updateSoundUI();
+        });
+        
+        // Theme Settings
+        const themeBtn = document.getElementById('themeButton');
+        const closeTheme = document.getElementById('closeTheme');
+        if (themeBtn) themeBtn.addEventListener('click', () => {
+            this.updateThemeUI();
+            document.getElementById('themeModal').classList.add('show');
+        });
+        if (closeTheme) closeTheme.addEventListener('click', () => {
+            document.getElementById('themeModal').classList.remove('show');
+        });
+        
+        document.querySelectorAll('.theme-option').forEach(option => {
+            option.addEventListener('click', () => {
+                this.applyTheme(option.dataset.theme);
+            });
+        });
+        
+        // Pause/Resume
+        const pauseBtn = document.getElementById('pauseBtn');
+        const resumeBtn = document.getElementById('resumeBtn');
+        if (pauseBtn) pauseBtn.addEventListener('click', () => {
+            if (this.isPaused) {
+                this.resumeGame();
+            } else {
+                this.pauseGame();
+            }
+        });
+        if (resumeBtn) resumeBtn.addEventListener('click', () => this.resumeGame());
+        
         // Keyboard input
         document.addEventListener('keydown', (e) => {
-            if (this.isGameComplete || this.isAnimatingSolve) return;
+            if (this.isGameComplete || this.isAnimatingSolve || this.isPaused) return;
+            
+            // Escape key to pause/resume
+            if (e.key === 'Escape') {
+                if (this.isPaused) {
+                    this.resumeGame();
+                } else {
+                    this.pauseGame();
+                }
+                return;
+            }
             
             const key = e.key;
             
@@ -990,7 +1305,7 @@ class SudokuGame {
         });
     }
 
-    // ----- Simple Local Auth (demo only) -----
+    // ----- Enhanced Local Auth System -----
     userDbKey() { return 'sudokuUsers'; }
     loadUsers() {
         try {
@@ -1002,7 +1317,6 @@ class SudokuGame {
         try { localStorage.setItem(this.userDbKey(), JSON.stringify(db)); } catch (_) {}
     }
     async hash(str) {
-        // simple SHA-256 using SubtleCrypto if available; fallback to base64
         if (window.crypto?.subtle) {
             const enc = new TextEncoder();
             const buf = await crypto.subtle.digest('SHA-256', enc.encode(str));
@@ -1010,14 +1324,28 @@ class SudokuGame {
         }
         return btoa(str);
     }
+    validateUsername(username) {
+        return username && username.length >= 3 && username.length <= 20 && /^[a-zA-Z0-9_]+$/.test(username);
+    }
+    validatePassword(password) {
+        return password && password.length >= 4;
+    }
     userExists(username) {
         const db = this.loadUsers();
         return !!db[username];
     }
     async createUserAsync(username, password) {
+        if (!this.validateUsername(username)) throw new Error('Username must be 3-20 characters, letters/numbers/underscore only');
+        if (!this.validatePassword(password)) throw new Error('Password must be at least 4 characters');
+        if (this.userExists(username)) throw new Error('Username already exists');
+        
         const db = this.loadUsers();
         const hash = await this.hash(password);
-        db[username] = { passwordHash: hash };
+        db[username] = { 
+            passwordHash: hash, 
+            createdAt: new Date().toISOString(),
+            lastLogin: null
+        };
         this.saveUsers(db);
         this.getStatsForUser(username);
         this.saveUserStats();
@@ -1027,18 +1355,62 @@ class SudokuGame {
         if (!db[username]) return false;
         const stored = db[username].passwordHash;
         const hash = await this.hash(password);
-        return stored === hash;
+        if (stored === hash) {
+            // Update last login
+            db[username].lastLogin = new Date().toISOString();
+            this.saveUsers(db);
+            return true;
+        }
+        return false;
+    }
+    logout() {
+        this.currentUser = null;
+        localStorage.removeItem('sudokuCurrentUser');
+        const authBtn = document.getElementById('authButton');
+        const logoutBtn = document.getElementById('logoutButton');
+        if (authBtn) authBtn.style.display = '';
+        if (logoutBtn) logoutBtn.style.display = 'none';
+        this.currentPlayerName = 'Guest';
+        this.updatePlayerUI();
     }
 
     // ----- Dashboard and Charts -----
     refreshDashboard() {
-        const username = this.currentUser || this.currentPlayerName || 'Player';
+        const username = this.currentUser || this.currentPlayerName || 'Guest';
         const stats = this.getStatsForUser(username);
-        const streakEl = document.getElementById('dailyStreak');
-        const totalScoreEl = document.getElementById('totalScore');
-        if (streakEl) streakEl.textContent = String(stats.daily.streak || 0);
-        if (totalScoreEl) totalScoreEl.textContent = String(stats.totalScore || 0);
-        this.renderDifficultyChart(stats.winsByDifficulty || {});
+        
+        // Update player name
+        const playerEl = document.getElementById('dashboardPlayer');
+        if (playerEl) playerEl.textContent = username;
+        
+        // Update summary cards
+        const streakEl = document.getElementById('dashStreak');
+        const totalScoreEl = document.getElementById('dashTotalScore');
+        const totalGamesEl = document.getElementById('dashTotalGames');
+        const avgTimeEl = document.getElementById('dashAvgTime');
+        
+        if (streakEl) streakEl.textContent = String(stats.daily?.streak || 0);
+        if (totalScoreEl) totalScoreEl.textContent = (stats.totalScore || 0).toLocaleString();
+        
+        const wins = stats.winsByDifficulty || {};
+        const totalGames = (wins.easy || 0) + (wins.medium || 0) + (wins.hard || 0) + (wins.expert || 0);
+        if (totalGamesEl) totalGamesEl.textContent = totalGames.toLocaleString();
+        
+        // Calculate average time from best times
+        const bestTimes = this.bestTimes[username];
+        if (avgTimeEl) {
+            if (bestTimes && totalGames > 0) {
+                avgTimeEl.textContent = this.formatSeconds(Math.floor(bestTimes));
+            } else {
+                avgTimeEl.textContent = '--:--';
+            }
+        }
+        
+        // Render chart
+        this.renderDifficultyChart(wins);
+        
+        // Render detailed stats table
+        this.renderDetailedStats(wins);
     }
 
     renderDifficultyChart(wins) {
@@ -1049,37 +1421,198 @@ class SudokuGame {
         }
         const data = [wins.easy || 0, wins.medium || 0, wins.hard || 0, wins.expert || 0];
         this._diffChart = new Chart(ctx, {
-            type: 'pie',
+            type: 'doughnut',
             data: {
                 labels: ['Easy', 'Medium', 'Hard', 'Expert'],
                 datasets: [{
                     data,
-                    backgroundColor: ['#a5b4fc', '#93c5fd', '#fbbf24', '#f87171']
+                    backgroundColor: ['#10b981', '#f59e0b', '#ef4444', '#8b5cf6'],
+                    borderWidth: 3,
+                    borderColor: '#ffffff'
                 }]
             },
-            options: { responsive: true, plugins: { legend: { position: 'bottom' } } }
+            options: {
+                responsive: true,
+                maintainAspectRatio: true,
+                plugins: {
+                    legend: {
+                        position: 'bottom',
+                        labels: {
+                            padding: 15,
+                            font: { size: 13, weight: '600' },
+                            usePointStyle: true
+                        }
+                    },
+                    tooltip: {
+                        backgroundColor: 'rgba(0, 0, 0, 0.8)',
+                        padding: 12,
+                        titleFont: { size: 14, weight: '700' },
+                        bodyFont: { size: 13 },
+                        cornerRadius: 8
+                    }
+                },
+                cutout: '60%'
+            }
         });
     }
+    
+    renderDetailedStats(wins) {
+        const container = document.getElementById('detailedStats');
+        if (!container) return;
+        
+        const difficulties = ['easy', 'medium', 'hard', 'expert'];
+        const total = difficulties.reduce((sum, diff) => sum + (wins[diff] || 0), 0);
+        
+        let html = `
+            <div class="stat-row stat-row-header">
+                <div>Difficulty</div>
+                <div>Games Won</div>
+                <div>Win Rate</div>
+                <div>Score/Game</div>
+            </div>
+        `;
+        
+        difficulties.forEach(diff => {
+            const count = wins[diff] || 0;
+            const winRate = total > 0 ? Math.round((count / total) * 100) : 0;
+            const avgScore = count > 0 ? Math.floor((this.getStatsForUser(this.currentUser || this.currentPlayerName).totalScore || 0) / total) : 0;
+            
+            html += `
+                <div class="stat-row">
+                    <div class="stat-difficulty ${diff}">${diff.charAt(0).toUpperCase() + diff.slice(1)}</div>
+                    <div class="stat-value">${count}</div>
+                    <div class="stat-value">${winRate}%</div>
+                    <div class="stat-value">${avgScore.toLocaleString()}</div>
+                </div>
+            `;
+        });
+        
+        container.innerHTML = html;
+    }
 
-    // ----- Daily Puzzle -----
+    // ----- Professional Daily Challenge System -----
     getTodayKey() {
         const d = new Date();
         return `${d.getFullYear()}-${(d.getMonth()+1).toString().padStart(2,'0')}-${d.getDate().toString().padStart(2,'0')}`;
     }
-    daysBetween(a, b) {
-        const da = new Date(a+'T00:00:00');
-        const db = new Date(b+'T00:00:00');
-        return Math.round((db - da) / (1000*60*60*24));
+    
+    getDailyStats() {
+        try {
+            const raw = localStorage.getItem('sudokuDailyStats');
+            return raw ? JSON.parse(raw) : {};
+        } catch (_) { return {}; }
     }
+    
+    saveDailyStats(stats) {
+        try {
+            localStorage.setItem('sudokuDailyStats', JSON.stringify(stats));
+        } catch (_) {}
+    }
+    
+    updateDailyModal() {
+        const today = this.getTodayKey();
+        const stats = this.getDailyStats();
+        const todayStats = stats[today];
+        
+        // Update date
+        const dateEl = document.getElementById('dailyDate');
+        if (dateEl) dateEl.textContent = new Date().toLocaleDateString('en-US', { 
+            weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
+        });
+        
+        // Update streak
+        const streakEl = document.getElementById('dailyStreak');
+        if (streakEl) streakEl.textContent = this.calculateDailyStreak();
+        
+        // Update best time and score
+        const bestTimeEl = document.getElementById('dailyBestTime');
+        const bestScoreEl = document.getElementById('dailyBestScore');
+        if (todayStats) {
+            if (bestTimeEl) bestTimeEl.textContent = this.formatSeconds(todayStats.bestTime);
+            if (bestScoreEl) bestScoreEl.textContent = todayStats.bestScore.toLocaleString();
+        } else {
+            if (bestTimeEl) bestTimeEl.textContent = '--:--';
+            if (bestScoreEl) bestScoreEl.textContent = '0';
+        }
+        
+        // Update difficulty badge
+        const difficultyBadge = document.getElementById('dailyDifficultyBadge');
+        const dailyDifficulty = this.getDailyDifficulty(today);
+        if (difficultyBadge) {
+            difficultyBadge.textContent = dailyDifficulty.charAt(0).toUpperCase() + dailyDifficulty.slice(1);
+            difficultyBadge.className = `difficulty-badge difficulty-${dailyDifficulty}`;
+        }
+        
+        // Update status
+        const statusEl = document.getElementById('dailyStatus');
+        const startBtn = document.getElementById('startDaily');
+        if (todayStats?.completed) {
+            if (statusEl) {
+                statusEl.className = 'daily-status daily-completed';
+                statusEl.innerHTML = '<i class="fas fa-check-circle"></i> Challenge Completed Today!';
+            }
+            if (startBtn) {
+                startBtn.innerHTML = '<i class="fas fa-redo"></i> Play Again';
+            }
+        } else {
+            if (statusEl) {
+                statusEl.className = 'daily-status daily-available';
+                statusEl.innerHTML = '<i class="fas fa-star"></i> New Challenge Available!';
+            }
+            if (startBtn) {
+                startBtn.innerHTML = '<i class="fas fa-play"></i> Start Challenge';
+            }
+        }
+    }
+    
+    getDailyDifficulty(dateKey) {
+        const difficulties = ['easy', 'medium', 'hard', 'expert'];
+        let hash = 0;
+        for (let i = 0; i < dateKey.length; i++) {
+            hash = ((hash << 5) - hash + dateKey.charCodeAt(i)) & 0xffffffff;
+        }
+        return difficulties[Math.abs(hash) % difficulties.length];
+    }
+    
+    calculateDailyStreak() {
+        const stats = this.getDailyStats();
+        const today = new Date();
+        let streak = 0;
+        
+        for (let i = 0; i < 365; i++) {
+            const checkDate = new Date(today);
+            checkDate.setDate(today.getDate() - i);
+            const key = this.getTodayKey.call({ getTodayKey: () => {
+                const d = checkDate;
+                return `${d.getFullYear()}-${(d.getMonth()+1).toString().padStart(2,'0')}-${d.getDate().toString().padStart(2,'0')}`;
+            }});
+            
+            if (stats[key]?.completed) {
+                streak++;
+            } else if (i > 0) {
+                break;
+            }
+        }
+        return streak;
+    }
+    
     seedRandom(seed) {
         let s = 0;
-        for (let i=0;i<seed.length;i++) s = (s*31 + seed.charCodeAt(i)) >>> 0;
+        for (let i = 0; i < seed.length; i++) {
+            s = (s * 31 + seed.charCodeAt(i)) >>> 0;
+        }
         return () => (s = (1103515245 * s + 12345) % 0x80000000) / 0x80000000;
     }
-    startDailyPuzzle() {
-        const key = this.getTodayKey();
-        const rng = this.seedRandom(key);
-        // Temporarily swap shuffleArray to deterministic version for generation
+    
+    startDailyChallenge() {
+        const today = this.getTodayKey();
+        const dailyDifficulty = this.getDailyDifficulty(today);
+        
+        // Set difficulty
+        document.getElementById('difficulty').value = dailyDifficulty;
+        
+        // Generate deterministic puzzle
+        const rng = this.seedRandom(today);
         const origShuffle = this.shuffleArray.bind(this);
         this.shuffleArray = (arr) => {
             const a = [...arr];
@@ -1089,44 +1622,50 @@ class SudokuGame {
             }
             return a;
         };
+        
         this.generateNewPuzzle();
-        // restore shuffle
         this.shuffleArray = origShuffle;
+        
         this.updateDisplay();
         this.resetGameStats();
         this.startTimer();
         this.isGameComplete = false;
         this.isDailyPuzzleToday = true;
-        // Start quiz mode: pick a random empty cell and instruct user
-        const empties = [];
-        for (let r = 0; r < 9; r++) {
-            for (let c = 0; c < 9; c++) {
-                if (this.grid[r][c] === 0) empties.push({ row: r, col: c });
-            }
-        }
-        if (empties.length > 0) {
-            const target = empties[Math.floor(Math.random() * empties.length)];
-            this.dailyTargetCell = target;
-            this.dailyQuizMode = true;
-            const banner = document.getElementById('dailyQuizBanner');
-            if (banner) {
-                banner.textContent = 'Daily Quiz: Select the highlighted cell and enter the correct number.';
-                banner.style.display = '';
-            }
-            // highlight and select the target cell
-            this.selectCell(target.row, target.col);
-            const cell = document.querySelector(`[data-row="${target.row}"][data-col="${target.col}"]`);
-            if (cell) cell.classList.add('highlighted');
+        
+        // Show daily challenge banner
+        const banner = document.getElementById('dailyQuizBanner');
+        if (banner) {
+            banner.className = 'info-banner daily-challenge-banner';
+            banner.innerHTML = `<i class="fas fa-calendar-star"></i> Daily Challenge - ${dailyDifficulty.charAt(0).toUpperCase() + dailyDifficulty.slice(1)} | +50% Bonus Points`;
+            banner.style.display = 'block';
         }
     }
-
-    exitDailyQuizMode() {
-        this.dailyQuizMode = false;
-        this.dailyTargetCell = null;
+    
+    completeDailyChallenge(elapsedSeconds, score) {
+        const today = this.getTodayKey();
+        const stats = this.getDailyStats();
+        
+        if (!stats[today]) {
+            stats[today] = { completed: false, bestTime: Infinity, bestScore: 0, attempts: 0 };
+        }
+        
+        stats[today].attempts++;
+        stats[today].completed = true;
+        
+        // Update bests
+        if (elapsedSeconds < stats[today].bestTime) {
+            stats[today].bestTime = elapsedSeconds;
+        }
+        if (score > stats[today].bestScore) {
+            stats[today].bestScore = score;
+        }
+        
+        this.saveDailyStats(stats);
+        this.isDailyPuzzleToday = false;
+        
+        // Hide banner
         const banner = document.getElementById('dailyQuizBanner');
         if (banner) banner.style.display = 'none';
-        // Deselect selection to resume normal play
-        this.deselectCell();
     }
     
     handleArrowKeys(e) {
